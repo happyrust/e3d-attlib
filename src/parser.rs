@@ -266,6 +266,21 @@ impl AttlibData {
             .map(|idx| idx + 1)
     }
 
+    /// Iterator over ATGTDF entries with duplicate hashes filtered out.
+    /// Keeps the FIRST occurrence of each hash (which corresponds to the
+    /// smallest `atgtdf_position`, which `atgtdf_position(hash)` returns).
+    ///
+    /// The on-disk ATGTDF can contain duplicate hash entries for system
+    /// attributes that appear in both the per-installation default set
+    /// and the project-specific overrides. For an attribute-resolution
+    /// pipeline that uses `atgtdf_position(hash)`, the second occurrence
+    /// is structurally unreachable, so iterating attr_defs without
+    /// dedup will re-decode the same slot multiple times.
+    pub fn attr_defs_unique(&self) -> impl Iterator<Item = &AttrDefEntry> {
+        let mut seen = std::collections::HashSet::with_capacity(self.attr_defs.len());
+        self.attr_defs.iter().filter(move |def| seen.insert(def.hash))
+    }
+
     /// Convenience: get the `AttrDefEntry` for a hash directly.
     pub fn attr_def(&self, attr_hash: u32) -> Option<&AttrDefEntry> {
         self.attr_def_map.get(&attr_hash)
