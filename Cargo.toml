@@ -1,0 +1,9 @@
+[package]
+name = "e3d-attlib"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone parser for E3D/PDMS attlib.dat attribute library files"
+
+[dependencies]
+thiserror = "2"
+nom = "8"
