@@ -91,12 +91,52 @@ pub struct NounAttrEntry {
     pub type_code: u32,
 }
 
+/// Default value for an attribute, applied when the element's storage slot
+/// holds the sentinel `0xFFFFFFFF` ("use default" per IDA ATNLOG).
+///
+/// IDA reference (`progress.jsonl` entry #20 of goal
+/// `e3d31-attribute-parsing`): when the per-element slot at ATGTDF
+/// position `i` reads `0xFFFFFFFF`, the runtime resolves the value via
+///
+/// ```text
+/// dword_6C21390[dword_6C21200[i - 1] - 1]
+/// ```
+///
+/// — `dword_6C21200` is a per-ATGTDF-index pool index (1-based, 0 = no
+/// default) and `dword_6C21390` is the value pool. The on-disk layout of
+/// these two arrays in `attlib.dat` is **not yet recovered from IDA**;
+/// [`AttlibData::set_attr_default`] is the runtime-injection API used by
+/// tests and any future parser pass that populates the pool from
+/// `attlib.dat`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AttrDefault {
+    Int(i32),
+    Real(f64),
+    Bool(bool),
+    /// Raw 32-bit word for default-pool entries the parser does not yet
+    /// classify (text refs, RefNo placeholders, etc.).
+    Raw(u32),
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct AttrDefEntry {
     pub hash: u32,
     pub data_type: u32,
     pub kind: u32,
     pub size: u32,
+    /// Default value applied when the element's slot reads `0xFFFFFFFF`.
+    /// `None` means the default is not (yet) known to the parser — the
+    /// decoder will surface the sentinel as a `Raw(0xFFFFFFFF)`-equivalent
+    /// value in that case.
+    pub default_value: Option<AttrDefault>,
+}
+
+impl AttrDefEntry {
+    /// Construct an `AttrDefEntry` with `default_value = None`.
+    /// Convenient for parsers and tests that don't have a default value.
+    pub fn new(hash: u32, data_type: u32, kind: u32, size: u32) -> Self {
+        Self { hash, data_type, kind, size, default_value: None }
+    }
 }
 
 /// One entry in the ATGTIX (Attribute Index) table — the raw on-disk
@@ -284,6 +324,34 @@ impl AttlibData {
     /// Convenience: get the `AttrDefEntry` for a hash directly.
     pub fn attr_def(&self, attr_hash: u32) -> Option<&AttrDefEntry> {
         self.attr_def_map.get(&attr_hash)
+    }
+
+    /// Inject a default value for an attribute hash, updating both
+    /// `attr_defs` (the canonical vector) and `attr_def_map` (the lookup
+    /// shortcut) so subsequent calls to [`attr_def`] see the same value.
+    ///
+    /// Returns `true` when at least one matching `AttrDefEntry` was
+    /// updated; `false` when the hash is not present in `attr_defs`.
+    ///
+    /// This is the runtime-injection API for the default-value pool
+    /// described on [`AttrDefault`]. Tests use it to validate the decoder
+    /// pipeline end-to-end; a future ATGTDF default-pool parser pass
+    /// will call this internally once the on-disk layout in `attlib.dat`
+    /// is recovered from IDA.
+    ///
+    /// [`attr_def`]: AttlibData::attr_def
+    pub fn set_attr_default(&mut self, attr_hash: u32, default: AttrDefault) -> bool {
+        let mut found = false;
+        for def in self.attr_defs.iter_mut() {
+            if def.hash == attr_hash {
+                def.default_value = Some(default);
+                found = true;
+            }
+        }
+        if let Some(entry) = self.attr_def_map.get_mut(&attr_hash) {
+            entry.default_value = Some(default);
+        }
+        found
     }
 }
 
@@ -580,13 +648,59 @@ fn parse_atgtdf(file: &mut File, start_page: usize, data: &mut AttlibData) -> Re
                 }
             }
 
-            data.attr_defs.push(AttrDefEntry {
-                hash: w0,
-                data_type: w1,
-                kind,
-                size,
-            });
+            data.attr_defs.push(AttrDefEntry::new(w0, w1, kind, size));
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attr_def_entry_new_yields_none_default() {
+        let e = AttrDefEntry::new(0x123, 1, 1, 1);
+        assert_eq!(e.hash, 0x123);
+        assert_eq!(e.data_type, 1);
+        assert_eq!(e.kind, 1);
+        assert_eq!(e.size, 1);
+        assert!(e.default_value.is_none());
+    }
+
+    #[test]
+    fn set_attr_default_updates_both_vector_and_map() {
+        let mut a = AttlibData::default();
+        a.attr_defs.push(AttrDefEntry::new(0x111, 1, 1, 1));
+        a.attr_defs.push(AttrDefEntry::new(0x222, 2, 1, 1));
+        a.build_attr_def_map();
+
+        assert!(a.set_attr_default(0x111, AttrDefault::Int(42)));
+        let from_vec = a.attr_defs.iter().find(|d| d.hash == 0x111).unwrap();
+        let from_map = a.attr_def(0x111).unwrap();
+        assert_eq!(from_vec.default_value, Some(AttrDefault::Int(42)));
+        assert_eq!(from_map.default_value, Some(AttrDefault::Int(42)));
+        assert!(a.attr_def(0x222).unwrap().default_value.is_none());
+    }
+
+    #[test]
+    fn set_attr_default_returns_false_when_hash_unknown() {
+        let mut a = AttlibData::default();
+        a.attr_defs.push(AttrDefEntry::new(0x111, 1, 1, 1));
+        a.build_attr_def_map();
+        assert!(!a.set_attr_default(0xDEADBEEF, AttrDefault::Bool(true)));
+        assert!(a.attr_def(0xDEADBEEF).is_none());
+    }
+
+    #[test]
+    fn set_attr_default_handles_duplicate_hashes() {
+        let mut a = AttlibData::default();
+        a.attr_defs.push(AttrDefEntry::new(0x111, 1, 1, 1));
+        a.attr_defs.push(AttrDefEntry::new(0x111, 1, 1, 1));
+        a.build_attr_def_map();
+        assert!(a.set_attr_default(0x111, AttrDefault::Real(3.14)));
+        for def in &a.attr_defs {
+            assert_eq!(def.default_value, Some(AttrDefault::Real(3.14)));
+        }
+    }
 }
