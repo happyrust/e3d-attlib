@@ -589,6 +589,27 @@ fn longest_atgtdf_run(words: &[u32]) -> u32 {
     max_run
 }
 
+/// Translate a raw default-pool word into a typed [`AttrDefault`] based
+/// on the ATGTDF entry's `data_type`. Mirrors the semantics observed in
+/// IDA `sub_55F53B8`: the runtime writes the word verbatim into the
+/// pool; consumers interpret it per type when materialising the value.
+fn decode_default_from_raw(data_type: u32, raw: u32) -> AttrDefault {
+    match data_type {
+        // Integer / enum-like — interpret the word as signed i32 so the
+        // ATNLOG sentinel `-1` (0xFFFFFFFF) round-trips correctly.
+        1 => AttrDefault::Int(raw as i32),
+        // Boolean — IDA ATNLOG (`sub_55BC98B`) treats only `raw == 1`
+        // as true; everything else is false.
+        3 => AttrDefault::Bool(raw == 1),
+        // For all other types (Real/Text/DBREF/Enum/etc.) the single
+        // pool word cannot carry the full value; surface as `Raw` and
+        // let callers decide how to interpret. Real types in
+        // particular are 2-word f64 in slots, so a 1-word default is
+        // ambiguous and best left to the caller.
+        _ => AttrDefault::Raw(raw),
+    }
+}
+
 fn parse_atgtdf(file: &mut File, start_page: usize, data: &mut AttlibData) -> Result<(), String> {
     // IDA reference: sub_55F53B8 (`exprlib/ATGTDF`). Records are (hash,
     // type, kind) triples. `kind==1` ⇒ scalar (no extra word); `kind==2`
@@ -634,21 +655,50 @@ fn parse_atgtdf(file: &mut File, start_page: usize, data: &mut AttlibData) -> Re
             }
             i += 3;
 
+            // Per IDA `sub_55F53B8` (the on-disk ATGTDF reader):
+            //
+            // * `kind == 1` → scalar with NO default; no extra words.
+            // * `kind == 2 && type == 4` → variable-length array default:
+            //   one `count` word followed by `count` value words; all go
+            //   into the runtime default-value pool (`dword_6C21390`).
+            // * `kind == 2 && type != 4` → scalar with a single-word
+            //   default; that word goes into the default-value pool.
+            //
+            // Historical note: pre-Step 13, this loop stored the single
+            // default word into the `size` field as a quirky stand-in.
+            // We preserve that legacy semantics (`size = raw_default`)
+            // for backward compatibility with existing EXMAP-based
+            // callers, while ALSO surfacing the value via the new
+            // `default_value` field so the ATNLOG `RAW_USE_DEFAULT`
+            // branch in `e3d-io` can substitute it automatically.
             let mut size = 1u32;
+            let mut default_value: Option<AttrDefault> = None;
             if kind == 2 && i < words.len() {
                 if w1 == 4 {
-                    if i < words.len() {
-                        let n = words[i];
-                        size = n;
-                        i += 1 + n as usize;
-                    }
+                    let n = words[i];
+                    size = n;
+                    // Array default is not surfaced as a single
+                    // `AttrDefault` value (the enum is `Copy` and an
+                    // `IntArray` variant would break that). The values
+                    // ARE still consumed below to keep the cursor in
+                    // sync. A future Step 13b could expose array
+                    // defaults via a side table keyed by hash.
+                    i += 1 + n as usize;
                 } else {
-                    size = words[i];
+                    let raw = words[i];
                     i += 1;
+                    size = raw;
+                    default_value = Some(decode_default_from_raw(w1, raw));
                 }
             }
 
-            data.attr_defs.push(AttrDefEntry::new(w0, w1, kind, size));
+            data.attr_defs.push(AttrDefEntry {
+                hash: w0,
+                data_type: w1,
+                kind,
+                size,
+                default_value,
+            });
         }
     }
     Ok(())
@@ -702,5 +752,21 @@ mod tests {
         for def in &a.attr_defs {
             assert_eq!(def.default_value, Some(AttrDefault::Real(3.14)));
         }
+    }
+
+    #[test]
+    fn decode_default_from_raw_matches_atnlog_semantics() {
+        // type=1 (Integer): raw -> i32, preserves 0xFFFFFFFF as -1.
+        assert_eq!(decode_default_from_raw(1, 42), AttrDefault::Int(42));
+        assert_eq!(decode_default_from_raw(1, 0xFFFFFFFF), AttrDefault::Int(-1));
+        // type=3 (Boolean): only raw==1 is true, per IDA ATNLOG case 1.
+        assert_eq!(decode_default_from_raw(3, 1), AttrDefault::Bool(true));
+        assert_eq!(decode_default_from_raw(3, 0), AttrDefault::Bool(false));
+        assert_eq!(decode_default_from_raw(3, 0xFFFFFFFF), AttrDefault::Bool(false));
+        assert_eq!(decode_default_from_raw(3, 5), AttrDefault::Bool(false));
+        // Other types (2 Real, 4 Text, 5 DBREF, etc.) surface as Raw —
+        // single-word defaults are ambiguous for multi-word types.
+        assert_eq!(decode_default_from_raw(2, 0x12345678), AttrDefault::Raw(0x12345678));
+        assert_eq!(decode_default_from_raw(5, 0xCAFEBABE), AttrDefault::Raw(0xCAFEBABE));
     }
 }
