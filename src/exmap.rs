@@ -140,7 +140,11 @@ pub fn exmap_dispatch(ty: u32, size: u32, ityp: u32, is_uda: bool) -> Option<Exp
     // type==2 size==1 we emit `RealScalar` instead of the literal
     // `Real` so decoders pick the 2-word f64 reader.
     if ty == 2 {
-        return Some(if size == 1 { ExpType::RealScalar } else { ExpType::RealArray });
+        return Some(if size == 1 {
+            ExpType::RealScalar
+        } else {
+            ExpType::RealArray
+        });
     }
     if matches!(ityp, 23 | 29 | 38 | 48) {
         return Some(ExpType::Text);
@@ -148,7 +152,11 @@ pub fn exmap_dispatch(ty: u32, size: u32, ityp: u32, is_uda: bool) -> Option<Exp
     // For type==1 size==1 we also distinguish: emit `Integer` (1-word
     // i32) instead of the IDA-literal `Real`.
     if ty == 1 {
-        return Some(if size == 1 { ExpType::Integer } else { ExpType::IntArray });
+        return Some(if size == 1 {
+            ExpType::Integer
+        } else {
+            ExpType::IntArray
+        });
     }
     let raw = match ty {
         3 => {

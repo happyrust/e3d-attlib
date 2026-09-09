@@ -1,4 +1,4 @@
-use e3d_attlib::{AttlibData, db1_hash, db1_dehash};
+use e3d_attlib::{db1_dehash, db1_hash, AttlibData};
 use std::path::Path;
 
 const ATTLIB_PATH: &str = r"D:\work\plant-code\pdms-io-fork\test-file\attlib.dat";
@@ -23,7 +23,10 @@ fn parse_and_query() {
 
     println!("\n  First 10 attributes:");
     for (i, attr) in data.attributes.iter().take(10).enumerate() {
-        println!("    [{}] id={} name='{}' type={}", i, attr.id, attr.name, attr.type_code);
+        println!(
+            "    [{}] id={} name='{}' type={}",
+            i, attr.id, attr.name, attr.type_code
+        );
     }
 
     println!("\n  First 10 nouns:");
@@ -63,9 +66,21 @@ fn parse_file_populates_attr_default_for_kind2_scalar_entries() {
 
     let total = data.attr_defs.len();
     let kind2_total = data.attr_defs.iter().filter(|d| d.kind == 2).count();
-    let kind2_type4 = data.attr_defs.iter().filter(|d| d.kind == 2 && d.data_type == 4).count();
-    let kind2_scalar = data.attr_defs.iter().filter(|d| d.kind == 2 && d.data_type != 4).count();
-    let with_default = data.attr_defs.iter().filter(|d| d.default_value.is_some()).count();
+    let kind2_type4 = data
+        .attr_defs
+        .iter()
+        .filter(|d| d.kind == 2 && d.data_type == 4)
+        .count();
+    let kind2_scalar = data
+        .attr_defs
+        .iter()
+        .filter(|d| d.kind == 2 && d.data_type != 4)
+        .count();
+    let with_default = data
+        .attr_defs
+        .iter()
+        .filter(|d| d.default_value.is_some())
+        .count();
 
     println!("\n=== ATGTDF default-value coverage ===");
     println!("total entries: {total}");

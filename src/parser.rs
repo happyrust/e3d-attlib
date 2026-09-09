@@ -135,7 +135,13 @@ impl AttrDefEntry {
     /// Construct an `AttrDefEntry` with `default_value = None`.
     /// Convenient for parsers and tests that don't have a default value.
     pub fn new(hash: u32, data_type: u32, kind: u32, size: u32) -> Self {
-        Self { hash, data_type, kind, size, default_value: None }
+        Self {
+            hash,
+            data_type,
+            kind,
+            size,
+            default_value: None,
+        }
     }
 }
 
@@ -203,9 +209,7 @@ impl AttlibData {
         // in the base-27 range); UDAs with hash > 0x171FAD39 yield empty
         // names here — a full UDA-name follow-on (Slice 7 follow-up) would
         // read the name string at the indicated (page, word_offset).
-        for (table_kind, start_opt) in
-            [("system", sys_attr_start), ("uda", uda_attr_start)]
-        {
+        for (table_kind, start_opt) in [("system", sys_attr_start), ("uda", uda_attr_start)] {
             if let Some(start) = start_opt {
                 let entries = parse_atgtix(&mut file, start)?;
                 for entry in entries {
@@ -263,7 +267,9 @@ impl AttlibData {
     }
 
     pub fn get_attr_name(&self, attr_index: u32) -> Option<&str> {
-        self.attributes.get(attr_index as usize).map(|a| a.name.as_str())
+        self.attributes
+            .get(attr_index as usize)
+            .map(|a| a.name.as_str())
     }
 
     pub fn get_noun_attributes(&self, noun_hash: u32) -> Vec<(&str, AttrDataType, u32)> {
@@ -318,7 +324,9 @@ impl AttlibData {
     /// dedup will re-decode the same slot multiple times.
     pub fn attr_defs_unique(&self) -> impl Iterator<Item = &AttrDefEntry> {
         let mut seen = std::collections::HashSet::with_capacity(self.attr_defs.len());
-        self.attr_defs.iter().filter(move |def| seen.insert(def.hash))
+        self.attr_defs
+            .iter()
+            .filter(move |def| seen.insert(def.hash))
     }
 
     /// Convenience: get the `AttrDefEntry` for a hash directly.
@@ -364,8 +372,7 @@ fn read_page_words(file: &mut File, page_no: usize) -> Result<Vec<u32>, String> 
     file.read_exact(&mut buf)
         .map_err(|e| format!("read page {}: {}", page_no, e))?;
 
-    parse_page_words(&buf)
-        .map_err(|_| format!("parse page {} failed", page_no))
+    parse_page_words(&buf).map_err(|_| format!("parse page {} failed", page_no))
 }
 
 fn parse_page_words(input: &[u8]) -> Result<Vec<u32>, String> {
@@ -762,11 +769,20 @@ mod tests {
         // type=3 (Boolean): only raw==1 is true, per IDA ATNLOG case 1.
         assert_eq!(decode_default_from_raw(3, 1), AttrDefault::Bool(true));
         assert_eq!(decode_default_from_raw(3, 0), AttrDefault::Bool(false));
-        assert_eq!(decode_default_from_raw(3, 0xFFFFFFFF), AttrDefault::Bool(false));
+        assert_eq!(
+            decode_default_from_raw(3, 0xFFFFFFFF),
+            AttrDefault::Bool(false)
+        );
         assert_eq!(decode_default_from_raw(3, 5), AttrDefault::Bool(false));
         // Other types (2 Real, 4 Text, 5 DBREF, etc.) surface as Raw —
         // single-word defaults are ambiguous for multi-word types.
-        assert_eq!(decode_default_from_raw(2, 0x12345678), AttrDefault::Raw(0x12345678));
-        assert_eq!(decode_default_from_raw(5, 0xCAFEBABE), AttrDefault::Raw(0xCAFEBABE));
+        assert_eq!(
+            decode_default_from_raw(2, 0x12345678),
+            AttrDefault::Raw(0x12345678)
+        );
+        assert_eq!(
+            decode_default_from_raw(5, 0xCAFEBABE),
+            AttrDefault::Raw(0xCAFEBABE)
+        );
     }
 }

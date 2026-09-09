@@ -71,8 +71,8 @@ mod tests {
         // Sample names verified against IDA — see slice_3_complete in
         // goals/e3d31-attribute-parsing/progress.jsonl.
         for name in [
-            "PTYP", "BORE", "HBOR", "DESP", "POSI", "ORIE", "TYPE",
-            "RPRO", "CDPR", "LDPR", "TDPR", "PROPRE", "REALEV", "NAME", "OBST",
+            "PTYP", "BORE", "HBOR", "DESP", "POSI", "ORIE", "TYPE", "RPRO", "CDPR", "LDPR", "TDPR",
+            "PROPRE", "REALEV", "NAME", "OBST",
         ] {
             let h = db1_hash(name);
             let got = lookup_by_hash(h);
