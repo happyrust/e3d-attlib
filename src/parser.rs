@@ -155,6 +155,29 @@ pub struct AtgtixEntry {
     pub word_offset: u32,
 }
 
+/// attlib 的 noun 记录里「目录值」那一列：`<noun 名字串> <n> <n 个属性 hash>`。
+///
+/// 这一列列的是设计件从目录 noun 上取值的那几个属性（`SPCOMPONENT`：CATR / DETR /
+/// MATPUR / MATR / PDAREF / PRTREF / TMPR；`GPART`：CATR / DETR / DRSSRE / PDAREF /
+/// PTDTRE / TMPR；`PRTELEMENT`：CATR / DETR / PTDTRE / TMPR）。它是 attlib 里唯一
+/// **按 noun** 点名 `DETR` 的地方：`DETR`（Detref，REF）在目录 noun 上沿用了 `DETA`
+/// （Detail，BOOL）的存储号 565843，`*vir.dat` 模板与 .NET 导出都只看得见 565843，
+/// 要知道这一格在 SPCO 上叫 Detref、在 BRAN 上叫 Detail，只能从这里来（2026-09-19
+/// 活 E3D 定标：SPCO 上 `Q DETA` 报 `does not have attribute DETA`、`Q DETR` 答
+/// `Detref /AAPA100-SR`；BRAN 上反过来）。
+///
+/// noun 记录本身的完整格式还没有从 IDA 恢复，所以不按记录走，而是全文件扫这一列
+/// 自己的形状：一个全大写的长度前缀字串（noun 名字，attlib 里的写法可以是前缀，
+/// `SPCOM`），紧跟计数 n（1..=64）与 n 个都在 ATGTIX 索引里的属性 hash。三个条件同时
+/// 成立才算一条；名字串之后不是计数、或列表里混进任何一个索引里没有的字，都不算。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogueValueList {
+    /// noun 名字，按 attlib 里写的：`GPART`、`PRTELEMENT`、`SPCOM`。
+    pub noun: String,
+    /// 属性名字 hash（db1），按 attlib 里的顺序。
+    pub attrs: Vec<u32>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AttlibData {
     pub attributes: Vec<AttributeRecord>,
@@ -164,6 +187,8 @@ pub struct AttlibData {
     pub noun_attr_entries: Vec<NounAttrEntry>,
     pub attr_defs: Vec<AttrDefEntry>,
     pub attr_def_map: HashMap<u32, AttrDefEntry>,
+    /// 见 [`CatalogueValueList`]。
+    pub catalogue_value_lists: Vec<CatalogueValueList>,
 }
 
 impl AttlibData {
@@ -253,7 +278,25 @@ impl AttlibData {
 
         data.build_attr_def_map();
 
+        // 目录值列没有目录页指针可走，按形状全文件扫；ATGTIX 已经读完，正好做它的
+        // 「认识的属性 hash」集合。
+        let known: std::collections::HashSet<u32> =
+            data.atgtix_entries.iter().map(|entry| entry.hash).collect();
+        data.catalogue_value_lists = parse_catalogue_value_lists(&mut file, &known)?;
+
         Ok(data)
+    }
+
+    /// 哪些 noun 的目录值列里点了这个属性（见 [`CatalogueValueList`]）。
+    ///
+    /// 回的是 attlib 里的名字写法（`SPCOM` / `GPART` / `PRTELEMENT`），不是 noun hash：
+    /// attlib 这一列存的是字串，可能只是全名的前缀，对回目录里的 noun 要由拿着 noun
+    /// 目录的一方按前缀去配。
+    pub fn catalogue_value_nouns(&self, attr_hash: u32) -> impl Iterator<Item = &str> + '_ {
+        self.catalogue_value_lists
+            .iter()
+            .filter(move |list| list.attrs.contains(&attr_hash))
+            .map(|list| list.noun.as_str())
     }
 
     fn build_attr_def_map(&mut self) {
@@ -450,6 +493,66 @@ fn parse_atgtix(file: &mut File, start_page: usize) -> Result<Vec<AtgtixEntry>, 
             });
             i += 2;
         }
+    }
+    Ok(out)
+}
+
+/// 全文件扫 [`CatalogueValueList`] 那一列的形状：`<len> <len 个 A–Z 字> <n> <n 个已知 hash>`。
+///
+/// 一条命中后从列表末尾接着扫，不命中就前进一个字。同一个 noun 名字在记录里出现
+/// 三次（全名、短名、目录值列前），前两次后面跟的是 `1` 与描述串，不满足「计数 +
+/// 全部已知 hash」，自然落选，不用认记录边界。
+fn parse_catalogue_value_lists(
+    file: &mut File,
+    known: &std::collections::HashSet<u32>,
+) -> Result<Vec<CatalogueValueList>, String> {
+    const NAME_LEN: std::ops::RangeInclusive<usize> = 2..=16;
+    const LIST_LEN: std::ops::RangeInclusive<usize> = 1..=64;
+
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| format!("seek attlib start: {e}"))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|e| format!("read attlib: {e}"))?;
+    let words: Vec<u32> = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| u32::from_be_bytes(*chunk))
+        .collect();
+
+    let is_upper = |word: &u32| (u32::from(b'A')..=u32::from(b'Z')).contains(word);
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < words.len() {
+        let len = words[i] as usize;
+        let name_end = i + len; // inclusive index of the last name char
+        if !NAME_LEN.contains(&len)
+            || name_end + 1 >= words.len()
+            || !words[i + 1..=name_end].iter().all(is_upper)
+        {
+            i += 1;
+            continue;
+        }
+        let count = words[name_end + 1] as usize;
+        let list_start = name_end + 2;
+        if !LIST_LEN.contains(&count)
+            || list_start + count > words.len()
+            || !words[list_start..list_start + count]
+                .iter()
+                .all(|hash| known.contains(hash))
+        {
+            i += 1;
+            continue;
+        }
+        out.push(CatalogueValueList {
+            noun: words[i + 1..=name_end]
+                .iter()
+                .map(|word| *word as u8 as char)
+                .collect(),
+            attrs: words[list_start..list_start + count].to_vec(),
+        });
+        i = list_start + count;
     }
     Ok(out)
 }
@@ -747,6 +850,54 @@ mod tests {
         a.build_attr_def_map();
         assert!(!a.set_attr_default(0xDEADBEEF, AttrDefault::Bool(true)));
         assert!(a.attr_def(0xDEADBEEF).is_none());
+    }
+
+    /// e3d31 的 attlib.dat：目录值列按 noun 点名 `DETR` 的正是三个目录 noun，且每
+    /// 条列表就是 2026-09-19 从文件里逐字读出来的那几个属性——多一个少一个都说明
+    /// 形状扫描认错了东西。BRAN 那一侧不该出现：`DETR` 不是设计 noun 的属性。
+    #[test]
+    fn catalogue_value_lists_name_detr_on_exactly_the_catalogue_nouns() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../e3d-io/schema/e3d31/binaries/attlib.dat"
+        );
+        if !Path::new(path).is_file() {
+            eprintln!("skip: {path} not present");
+            return;
+        }
+        let attlib = AttlibData::parse_file(path).unwrap();
+        let detr = db1_hash("DETR");
+        let mut nouns: Vec<&str> = attlib.catalogue_value_nouns(detr).collect();
+        nouns.sort_unstable();
+        assert_eq!(nouns, ["GPART", "PRTELEMENT", "SPCOM"]);
+
+        let names = |noun: &str| -> Vec<String> {
+            attlib
+                .catalogue_value_lists
+                .iter()
+                .find(|list| list.noun == noun)
+                .unwrap()
+                .attrs
+                .iter()
+                .map(|hash| resolve_attr_name(*hash))
+                .collect()
+        };
+        assert_eq!(
+            names("SPCOM"),
+            ["CATR", "DETR", "MATPUR", "MATR", "PDAREF", "PRTREF", "TMPR"]
+        );
+        assert_eq!(
+            names("GPART"),
+            ["CATR", "DETR", "DRSSRE", "PDAREF", "PTDTRE", "TMPR"]
+        );
+        assert_eq!(names("PRTELEMENT"), ["CATR", "DETR", "PTDTRE", "TMPR"]);
+        assert!(
+            attlib
+                .catalogue_value_nouns(db1_hash("DETA"))
+                .next()
+                .is_none(),
+            "目录值列里不该有 DETA：它是设计 noun 上的 Detail 标志，不是目录值"
+        );
     }
 
     #[test]
