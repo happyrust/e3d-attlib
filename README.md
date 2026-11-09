@@ -15,6 +15,7 @@ Reverse-engineered from `core.dll` via IDA Pro; field offsets, constants, and di
 - **EXMAP dispatch**: full IDA `sub_51D368F` table reproduced, including the `type==1 size==1 → Integer` and `type==2 size==1 → RealScalar` refinements (the IDA-literal codomain doesn't distinguish these; `e3d-attlib` does so its decoder can pick the correct reader).
 - **System name lookup**: 6377-entry static table extracted from `core.dll`'s `?ATT_<NAME>@@3...` global symbols. Binary-search by hash, O(log n).
 - **Hash round-trip**: `db1_hash` / `db1_dehash` validated against IDA `PDMS_Hash::String` at `0x588cb87`.
+- **Dictionary meta-field decoder** (`dict::AttrDict`): offline per-attribute read of the 63 ATGTDF columns (`DCHC`, `PLCF`, `WNOEVT`, `WNOCLM`, …) by reproducing the `core.dll` ATNLOG reader `sub_55BB6C3` — field ordinal from ATGTDF, record `(page, base)` from the system ATGTIX, `value = word[row + header[ordinal]]`, with `-1` ⇒ schema default and `0` ⇒ SYNO-inherited. Decoding DCHC reproduces the committed `dchc_change_classes.json` for all 4270 named attributes and PLCF the `plcf_flags.json` 58/58 (E3D 3.1). `WNOEVT` is set on exactly 7 attributes, none in the model-generation schema.
 
 ## Dependencies
 
@@ -61,6 +62,12 @@ let exp_type = exmap_dispatch(/* type */ 2, /* size */ 1, /* ityp */ 0, /* isUDA
 | `is_system_hash(hash)` | True when `hash <= 0x171FAD39` (the base-27 dehash range) |
 | `exmap_dispatch(ty, size, ityp, is_uda)` | `(type, size, ityp, isUDA) → ExpType` dispatch (IDA `sub_51D368F`) |
 | `ExpType` | Semantic value type enum (15 variants: Boolean / Integer / RealScalar / Text / DbRef / Position / Direction / Orientation / arrays / Blob) |
+| `dict::AttrDict::parse_file(path)` | Load the attribute meta-dictionary for offline field reads |
+| `AttrDict::dchc(attr)` / `plcf` / `wnoevt` / `wnoclm` | Per-attribute gate-field reads (see `FIELD_*` hashes) |
+| `AttrDict::resolve_int` / `resolve_bool` | Generic read of any of the 63 meta-fields by field hash |
+| `AttrDict::attributes_with_flag(field)` | List every attribute a boolean meta-field is set on |
+
+Run `cargo run --example wnoevt -- path\to\attlib.dat` to dump the WNOEVT/WNOCLM sets and a DCHC sample.
 
 ## License
 
